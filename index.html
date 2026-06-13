@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Murmuration — Boids Flocking Simulation</title>
+<style>
+  /* ============================================================
+     ZÁKLADNÉ ŠTÝLY — tmavá obloha, canvas cez celé okno
+     ============================================================ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #060812; }
+  #glcanvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+
+  /* ============================================================
+     UI — glassmorphism panel
+     ============================================================ */
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 280px;
+    padding: 14px 16px 12px;
+    background: rgba(13, 18, 34, 0.55);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    color: #dfe6f0;
+    font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    user-select: none;
+    transition: opacity .25s, transform .25s;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  #panel.hidden { opacity: 0; transform: translateX(-20px); pointer-events: none; }
+  #panel h1 {
+    font-size: 14px; font-weight: 600; letter-spacing: .4px; margin-bottom: 10px;
+    background: linear-gradient(90deg, #8fd6ff, #ffd9a0);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #panel .row { display: flex; align-items: center; justify-content: space-between; margin: 7px 0 2px; }
+  #panel label { color: #aab6c8; }
+  #panel .val { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #8fd6ff; font-size: 11px; }
+  #panel input[type=range] {
+    width: 100%; height: 18px; -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer;
+  }
+  #panel input[type=range]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px; background: rgba(255,255,255,0.15);
+  }
+  #panel input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: #8fd6ff; margin-top: -4.5px; box-shadow: 0 0 8px rgba(143,214,255,.6);
+  }
+  #panel input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.15); }
+  #panel input[type=range]::-moz-range-thumb {
+    width: 13px; height: 13px; border: none; border-radius: 50%; background: #8fd6ff;
+  }
+  #panel select, #panel button {
+    background: rgba(255,255,255,0.08); color: #dfe6f0;
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    padding: 5px 8px; font: inherit; cursor: pointer;
+  }
+  #panel select { width: 100%; margin-top: 2px; }
+  #panel select option { background: #141a2c; }
+  #panel button:hover { background: rgba(255,255,255,0.16); }
+  #panel .btnrow { display: flex; gap: 8px; margin-top: 10px; }
+  #panel .btnrow button { flex: 1; }
+  #panel button.active { background: rgba(143,214,255,0.25); border-color: rgba(143,214,255,0.5); }
+  #panel .sep { height: 1px; background: rgba(255,255,255,0.1); margin: 10px 0; }
+  #panel .toggles { display: flex; gap: 8px; margin-top: 8px; }
+  #panel .toggles button { flex: 1; }
+  #panel .keys { margin-top: 10px; color: #6f7b8e; font-size: 10.5px; line-height: 1.6; }
+  #panel .keys b { color: #9fb0c6; font-weight: 600; font-family: ui-monospace, monospace; }
+
+  /* FPS / štatistiky — roh vpravo hore */
+  #stats {
+    position: fixed; top: 16px; right: 16px;
+    padding: 8px 12px;
+    background: rgba(13, 18, 34, 0.55);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    color: #8fd6ff;
+    font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-align: right;
+    pointer-events: none;
+    transition: opacity .25s;
+  }
+  #stats.hidden { opacity: 0; }
+  #stats .dim { color: #6f7b8e; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<!-- ============================================================
+     OVLÁDACÍ PANEL
+     ============================================================ -->
+<div id="panel">
+  <h1>⛅ Murmuration · Boids</h1>
+
+  <div class="row"><label>Preset</label></div>
+  <select id="preset">
+    <option value="0">1 · Murmuration</option>
+    <option value="1">2 · Loose flock</option>
+    <option value="2">3 · Panic</option>
+    <option value="3">4 · Rivers</option>
+  </select>
+
+  <div class="sep"></div>
+
+  <div class="row"><label>Boids</label><span class="val" id="v-count"></span></div>
+  <input type="range" id="s-count" min="100" max="20000" step="100">
+
+  <div class="row"><label>Separation weight</label><span class="val" id="v-sepW"></span></div>
+  <input type="range" id="s-sepW" min="0" max="4" step="0.05">
+  <div class="row"><label>Separation radius</label><span class="val" id="v-sepR"></span></div>
+  <input type="range" id="s-sepR" min="4" max="60" step="1">
+
+  <div class="row"><label>Alignment weight</label><span class="val" id="v-alnW"></span></div>
+  <input type="range" id="s-alnW" min="0" max="4" step="0.05">
+  <div class="row"><label>Alignment radius</label><span class="val" id="v-alnR"></span></div>
+  <input type="range" id="s-alnR" min="10" max="120" step="1">
+
+  <div class="row"><label>Cohesion weight</label><span class="val" id="v-cohW"></span></div>
+  <input type="range" id="s-cohW" min="0" max="4" step="0.05">
+  <div class="row"><label>Cohesion radius</label><span class="val" id="v-cohR"></span></div>
+  <input type="range" id="s-cohR" min="10" max="120" step="1">
+
+  <div class="row"><label>Max speed</label><span class="val" id="v-speed"></span></div>
+  <input type="range" id="s-speed" min="40" max="400" step="5">
+
+  <div class="row"><label>Trail</label><span class="val" id="v-trail"></span></div>
+  <input type="range" id="s-trail" min="0" max="0.92" step="0.02">
+
+  <div class="row"><label>Flee radius</label><span class="val" id="v-flee"></span></div>
+  <input type="range" id="s-flee" min="60" max="500" step="10">
+
+  <div class="row"><label>Color mode</label></div>
+  <select id="colormode">
+    <option value="0">Local density (cyan → warm)</option>
+    <option value="1">Speed</option>
+    <option value="2">Direction hue</option>
+  </select>
+
+  <div class="toggles">
+    <button id="b-predator">🦅 Predator</button>
+    <button id="b-wind">🌬 Wind</button>
+  </div>
+
+  <div class="btnrow">
+    <button id="b-pause">⏸ Pause</button>
+    <button id="b-reset">↺ Reset</button>
+  </div>
+
+  <div class="keys">
+    <b>Space</b> pause · <b>P</b> predator · <b>R</b> reset · <b>H</b> hide UI · <b>1–4</b> presets<br>
+    <b>Wheel</b> zoom · <b>Right-drag</b> pan · mouse = hawk
+  </div>
+</div>
+
+<div id="stats"><span id="fps">—</span> fps<br><span id="cnt" class="dim">—</span></div>
+
+<script>
+'use strict';
+/* ================================================================
+   MURMURATION — simulácia kŕdľa škorcov (Craig Reynolds' boids)
+   ----------------------------------------------------------------
+   Architektúra:
+     1. Stav boidov v plochých Float32Array (SoA — žiadne objekty)
+     2. Priestorová hash mriežka (counting sort, bez alokácií za behu)
+     3. Aktualizácia boidov — 3 klasické pravidlá + predátor + vietor
+     4. WebGL renderovanie — jeden instancovaný draw call
+     5. UI, kamera, klávesnica
+   ================================================================ */
+
+/* ----------------------------------------------------------------
+   KONŠTANTY A GLOBÁLNY STAV
+   ---------------------------------------------------------------- */
+const WORLD_W = 4000;            // šírka sveta (svetové jednotky)
+const WORLD_H = 2400;            // výška sveta
+const MAX_BOIDS = 20000;         // maximálny počet boidov (predalokované polia)
+const MAX_NEIGHBORS = 12;        // koľko susedov boid maximálne sleduje (škorce ~7)
+const BOUND_MARGIN = 180;        // mäkký okraj — boidy sa tu plynulo otáčajú späť
+const BOID_SIZE = 5.0;           // polovičná dĺžka trojuholníka vo svetových jednotkách
+
+// Parametre simulácie (menia ich slidery a presety)
+const params = {
+  count: 5000,
+  sepRadius: 14, sepWeight: 1.5,
+  alnRadius: 42, alnWeight: 1.05,
+  cohRadius: 52, cohWeight: 0.75,
+  maxSpeed: 175,
+  trail: 0.25,          // 0 = žiadna stopa, 0.92 = dlhá stopa
+  fleeRadius: 220,
+  colorMode: 0,         // 0 hustota, 1 rýchlosť, 2 smer
+  predator: true,
+  wind: false,
+};
+
+// Presety — klávesy 1 až 4
+const PRESETS = [
+  { name: 'Murmuration', count: 5000, sepRadius: 14, sepWeight: 1.5,  alnRadius: 42, alnWeight: 1.05, cohRadius: 52, cohWeight: 0.75, maxSpeed: 175, trail: 0.25 },
+  { name: 'Loose flock', count: 3000, sepRadius: 20, sepWeight: 1.2,  alnRadius: 50, alnWeight: 0.6,  cohRadius: 70, cohWeight: 0.45, maxSpeed: 120, trail: 0.2  },
+  { name: 'Panic',       count: 5000, sepRadius: 26, sepWeight: 2.6,  alnRadius: 40, alnWeight: 0.7,  cohRadius: 50, cohWeight: 0.35, maxSpeed: 270, trail: 0.35 },
+  { name: 'Rivers',      count: 6000, sepRadius: 12, sepWeight: 1.1,  alnRadius: 60, alnWeight: 1.9,  cohRadius: 60, cohWeight: 0.2,  maxSpeed: 195, trail: 0.45 },
+];
+
+let paused = false;
+let uiHidden = false;
+
+/* ----------------------------------------------------------------
+   STAV BOIDOV — ploché Float32Array (Structure of Arrays)
+   ---------------------------------------------------------------- */
+const posX = new Float32Array(MAX_BOIDS);
+const posY = new Float32Array(MAX_BOIDS);
+const velX = new Float32Array(MAX_BOIDS);
+const velY = new Float32Array(MAX_BOIDS);
+const dens = new Float32Array(MAX_BOIDS);   // normalizovaná lokálna hustota (0..1) pre farbenie
+
+let N = params.count;   // aktuálny počet aktívnych boidov
+
+// Inicializácia jedného boida — náhodná pozícia v zhluku + náhodný smer
+function spawnBoid(i, cx, cy) {
+  const a = Math.random() * Math.PI * 2;
+  const r = Math.random() * 300;
+  posX[i] = Math.min(WORLD_W - BOUND_MARGIN, Math.max(BOUND_MARGIN, cx + Math.cos(a) * r));
+  posY[i] = Math.min(WORLD_H - BOUND_MARGIN, Math.max(BOUND_MARGIN, cy + Math.sin(a) * r));
+  const va = Math.random() * Math.PI * 2;
+  const s = params.maxSpeed * (0.5 + Math.random() * 0.5);
+  velX[i] = Math.cos(va) * s;
+  velY[i] = Math.sin(va) * s;
+}
+
+// Reset — boidy sa zrodia v niekoľkých zhlukoch (kŕdeľ sa rýchlo sformuje)
+function resetBoids() {
+  const clusters = 5;
+  const ccx = [], ccy = [];
+  for (let c = 0; c < clusters; c++) {
+    ccx.push(BOUND_MARGIN + Math.random() * (WORLD_W - 2 * BOUND_MARGIN));
+    ccy.push(BOUND_MARGIN + Math.random() * (WORLD_H - 2 * BOUND_MARGIN));
+  }
+  for (let i = 0; i < MAX_BOIDS; i++) {
+    const c = i % clusters;
+    spawnBoid(i, ccx[c], ccy[c]);
+  }
+}
+
+// Zmena počtu boidov — nové boidy sa zrodia pri náhodných existujúcich
+function setCount(n) {
+  n = Math.max(100, Math.min(MAX_BOIDS, n | 0));
+  if (n > N) {
+    for (let i = N; i < n; i++) {
+      const j = (Math.random() * N) | 0;
+      spawnBoid(i, posX[j], posY[j]);
+    }
+  }
+  N = n;
+  params.count = n;
+}
+
+/* ================================================================
+   1. PRIESTOROVÁ HASH MRIEŽKA
+   ----------------------------------------------------------------
+   Counting sort do predalokovaných polí — žiadne alokácie za frame,
+   žiadny GC churn. Veľkosť bunky = najväčší percepčný polomer,
+   takže susedov stačí hľadať v okolí 3×3 buniek.
+   ================================================================ */
+let cellSize = 64, gridW = 0, gridH = 0, numCells = 0;
+let cellStart = null;   // Int32Array(numCells + 1) — začiatok bunky v `entries`
+let cellPtr   = null;   // Int32Array(numCells)     — zapisovací kurzor pri plnení
+let entries   = new Int32Array(MAX_BOIDS);   // indexy boidov zoradené podľa bunky
+let boidCell  = new Int32Array(MAX_BOIDS);   // bunka každého boida (cache medzi prechodmi)
+
+// Prealokuje mriežku podľa aktuálnych polomerov (volané pri zmene sliderov)
+function rebuildGridDims() {
+  const maxR = Math.max(params.sepRadius, params.alnRadius, params.cohRadius);
+  cellSize = Math.max(16, maxR);
+  const w = Math.ceil(WORLD_W / cellSize) + 2;   // +2: rezerva pre boidy mierne mimo sveta
+  const h = Math.ceil(WORLD_H / cellSize) + 2;
+  if (w !== gridW || h !== gridH || !cellStart) {
+    gridW = w; gridH = h; numCells = w * h;
+    cellStart = new Int32Array(numCells + 1);
+    cellPtr = new Int32Array(numCells);
+  }
+}
+
+// Naplní mriežku — 3 lineárne prechody (count → prefix sum → scatter)
+function buildGrid() {
+  cellStart.fill(0);
+  // 1) spočítaj boidy v bunkách
+  for (let i = 0; i < N; i++) {
+    let gx = ((posX[i] / cellSize) | 0) + 1;
+    let gy = ((posY[i] / cellSize) | 0) + 1;
+    if (gx < 0) gx = 0; else if (gx >= gridW) gx = gridW - 1;
+    if (gy < 0) gy = 0; else if (gy >= gridH) gy = gridH - 1;
+    const c = gy * gridW + gx;
+    boidCell[i] = c;
+    cellStart[c + 1]++;
+  }
+  // 2) prefixová suma → začiatky buniek
+  for (let c = 0; c < numCells; c++) {
+    cellStart[c + 1] += cellStart[c];
+    cellPtr[c] = cellStart[c];
+  }
+  // 3) rozhoď indexy boidov do `entries`
+  for (let i = 0; i < N; i++) {
+    entries[cellPtr[boidCell[i]]++] = i;
+  }
+}
+
+/* ================================================================
+   2. AKTUALIZÁCIA BOIDOV — TRI KLASICKÉ PRAVIDLÁ
+   ----------------------------------------------------------------
+   Reynoldsovo riadenie: steer = desired − velocity,
+   orezané na maxForce. Práve toto orezanie robí pohyb prirodzeným.
+   ================================================================ */
+
+// Predátor (myš / dotyk) vo svetových súradniciach
+const predator = { x: 0, y: 0, active: false };
+
+// Vietor — pomaly rotujúci globálny vektor sily (jemný)
+let windAngle = 0;
+const WIND_STRENGTH = 14;        // zrýchlenie (jednotky/s²) — zámerne subtílne
+const WIND_ROT_SPEED = 0.07;     // radiány/s — pomalá rotácia
+
+// Pomocné premenné pre steering (modulové, aby sa nealokovalo)
+let steerX = 0, steerY = 0;
+
+// Vypočíta orezaný steering vektor smerom k želanej rýchlosti (dx, dy)
+function steerToward(dx, dy, vx, vy, maxSpeed, maxForce) {
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1e-6) { steerX = 0; steerY = 0; return; }
+  // desired = normalizovaný smer × maximálna rýchlosť
+  const k = maxSpeed / len;
+  let sx = dx * k - vx;
+  let sy = dy * k - vy;
+  // orezanie na maxForce — kľúč k plynulému zatáčaniu
+  const sl = Math.sqrt(sx * sx + sy * sy);
+  if (sl > maxForce) {
+    const f = maxForce / sl;
+    sx *= f; sy *= f;
+  }
+  steerX = sx; steerY = sy;
+}
+
+function updateBoids(dt) {
+  rebuildGridDims();
+  buildGrid();
+
+  const maxSpeed = params.maxSpeed;
+  const minSpeed = maxSpeed * 0.35;            // škorce sa nikdy nevznášajú na mieste
+  const maxForce = maxSpeed * 3.2;             // maximálna riadiaca sila
+  const sepR2 = params.sepRadius * params.sepRadius;
+  const alnR2 = params.alnRadius * params.alnRadius;
+  const cohR2 = params.cohRadius * params.cohRadius;
+  const maxR2 = Math.max(sepR2, alnR2, cohR2);
+  const fleeR2 = params.fleeRadius * params.fleeRadius;
+  const jitter = maxSpeed * 1.2;               // jemný náhodný šum (zrýchlenie)
+  const boundAccel = maxForce * 1.3;           // sila mäkkého okraja
+
+  // vietor — pomaly rotuje
+  windAngle += WIND_ROT_SPEED * dt;
+  const windX = params.wind ? Math.cos(windAngle) * WIND_STRENGTH : 0;
+  const windY = params.wind ? Math.sin(windAngle) * WIND_STRENGTH : 0;
+
+  const predOn = params.predator && predator.active;
+  const px = predator.x, py = predator.y;
+
+  const invMaxN = 1 / MAX_NEIGHBORS;
+
+  for (let i = 0; i < N; i++) {
+    const xi = posX[i], yi = posY[i];
+    const vxi = velX[i], vyi = velY[i];
+
+    // ---- zber susedov cez 3×3 bunky mriežky -------------------
+    let sepX = 0, sepY = 0, cntS = 0;     // separácia
+    let alnX = 0, alnY = 0, cntA = 0;     // zarovnanie
+    let cohX = 0, cohY = 0, cntC = 0;     // súdržnosť
+    let neighbors = 0;
+
+    const ci = boidCell[i];
+    const cgx = ci % gridW;
+    const cgy = (ci / gridW) | 0;
+    const gx0 = cgx > 0 ? cgx - 1 : 0;
+    const gx1 = cgx < gridW - 1 ? cgx + 1 : gridW - 1;
+    const gy0 = cgy > 0 ? cgy - 1 : 0;
+    const gy1 = cgy < gridH - 1 ? cgy + 1 : gridH - 1;
+
+    outer:
+    for (let gy = gy0; gy <= gy1; gy++) {
+      const rowBase = gy * gridW;
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const c = rowBase + gx;
+        const end = cellStart[c + 1];
+        for (let k = cellStart[c]; k < end; k++) {
+          const j = entries[k];
+          if (j === i) continue;
+          const dx = posX[j] - xi;
+          const dy = posY[j] - yi;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > maxR2) continue;
+
+          // PRAVIDLO 1 — SEPARÁCIA: odstúp od príliš blízkych susedov
+          // (vektor preč, vážený 1/d² — bližší sused tlačí silnejšie)
+          if (d2 < sepR2 && d2 > 1e-4) {
+            const inv = 1 / d2;
+            sepX -= dx * inv;
+            sepY -= dy * inv;
+            cntS++;
+          }
+          // PRAVIDLO 2 — ZAROVNANIE: leť priemerným smerom susedov
+          if (d2 < alnR2) {
+            alnX += velX[j];
+            alnY += velY[j];
+            cntA++;
+          }
+          // PRAVIDLO 3 — SÚDRŽNOSŤ: smeruj k ťažisku susedov
+          if (d2 < cohR2) {
+            cohX += posX[j];
+            cohY += posY[j];
+            cntC++;
+          }
+          // realistický limit — boid sleduje len ~12 najbližších susedov
+          if (++neighbors >= MAX_NEIGHBORS) break outer;
+        }
+      }
+    }
+
+    dens[i] = neighbors * invMaxN;   // lokálna hustota pre farbenie
+
+    // ---- Reynoldsovo riadenie pre každé pravidlo --------------
+    let ax = 0, ay = 0;
+
+    if (cntS > 0) {   // separácia
+      steerToward(sepX, sepY, vxi, vyi, maxSpeed, maxForce);
+      ax += steerX * params.sepWeight;
+      ay += steerY * params.sepWeight;
+    }
+    if (cntA > 0) {   // zarovnanie
+      steerToward(alnX, alnY, vxi, vyi, maxSpeed, maxForce);
+      ax += steerX * params.alnWeight;
+      ay += steerY * params.alnWeight;
+    }
+    if (cntC > 0) {   // súdržnosť — k ťažisku susedov
+      const icc = 1 / cntC;
+      steerToward(cohX * icc - xi, cohY * icc - yi, vxi, vyi, maxSpeed, maxForce);
+      ax += steerX * params.cohWeight;
+      ay += steerY * params.cohWeight;
+    }
+
+    // ---- PREDÁTOR — útek s vysokou prioritou ------------------
+    if (predOn) {
+      const dx = xi - px;
+      const dy = yi - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < fleeR2 && d2 > 1e-4) {
+        // čím bližšie, tým silnejší útek; rýchlejší ako bežný let
+        steerToward(dx, dy, vxi, vyi, maxSpeed * 1.7, maxForce * 2.5);
+        const panic = 1 - Math.sqrt(d2) / params.fleeRadius;   // 0..1
+        const w = 2.5 + panic * 3.5;
+        ax += steerX * w;
+        ay += steerY * w;
+      }
+    }
+
+    // ---- jemný náhodný jitter ---------------------------------
+    ax += (Math.random() - 0.5) * jitter;
+    ay += (Math.random() - 0.5) * jitter;
+
+    // ---- vietor ----------------------------------------------
+    ax += windX;
+    ay += windY;
+
+    // ---- mäkké hranice sveta — plynulé otočenie, nie odraz ----
+    if (xi < BOUND_MARGIN)            ax += boundAccel * (1 - xi / BOUND_MARGIN);
+    else if (xi > WORLD_W - BOUND_MARGIN) ax -= boundAccel * (1 - (WORLD_W - xi) / BOUND_MARGIN);
+    if (yi < BOUND_MARGIN)            ay += boundAccel * (1 - yi / BOUND_MARGIN);
+    else if (yi > WORLD_H - BOUND_MARGIN) ay -= boundAccel * (1 - (WORLD_H - yi) / BOUND_MARGIN);
+
+    // ---- integrácia + orezanie rýchlosti ----------------------
+    let nvx = vxi + ax * dt;
+    let nvy = vyi + ay * dt;
+    const sp2 = nvx * nvx + nvy * nvy;
+    if (sp2 > maxSpeed * maxSpeed) {
+      const f = maxSpeed / Math.sqrt(sp2);
+      nvx *= f; nvy *= f;
+    } else if (sp2 < minSpeed * minSpeed && sp2 > 1e-6) {
+      const f = minSpeed / Math.sqrt(sp2);
+      nvx *= f; nvy *= f;
+    }
+    velX[i] = nvx;
+    velY[i] = nvy;
+    posX[i] = xi + nvx * dt;
+    posY[i] = yi + nvy * dt;
+  }
+}
+
+/* ================================================================
+   3. WEBGL RENDEROVANIE — instancovaný draw call
+   ----------------------------------------------------------------
+   Každý boid = malý pretiahnutý trojuholník otočený podľa vektora
+   rýchlosti. Pozadie = gradientná obloha kreslená s alfa < 1
+   namiesto clear() → jemná pohybová stopa (motion blur).
+   ================================================================ */
+const canvas = document.getElementById('glcanvas');
+// preserveDrawingBuffer — nevyhnutné pre trail efekt (fade namiesto clear)
+const glOpts = { antialias: true, alpha: false, preserveDrawingBuffer: true };
+let gl = canvas.getContext('webgl2', glOpts);
+let isGL2 = !!gl;
+let instExt = null;
+if (!gl) {
+  gl = canvas.getContext('webgl', glOpts);
+  if (!gl) {
+    document.body.innerHTML = '<p style="color:#fff;padding:40px;font-family:sans-serif">WebGL is not supported in this browser.</p>';
+    throw new Error('WebGL not supported');
+  }
+  instExt = gl.getExtension('ANGLE_instanced_arrays');
+  if (!instExt) throw new Error('ANGLE_instanced_arrays not supported');
+}
+
+// Abstrakcia instancingu (WebGL2 vs WebGL1 + extension)
+function vertexAttribDivisor(loc, div) {
+  if (isGL2) gl.vertexAttribDivisor(loc, div);
+  else instExt.vertexAttribDivisorANGLE(loc, div);
+}
+function drawArraysInstanced(mode, first, count, instances) {
+  if (isGL2) gl.drawArraysInstanced(mode, first, count, instances);
+  else instExt.drawArraysInstancedANGLE(mode, first, count, instances);
+}
+
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    throw new Error('Shader error: ' + gl.getShaderInfoLog(sh));
+  }
+  return sh;
+}
+function createProgram(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error('Link error: ' + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+/* ---- program pozadia: gradientná obloha (navy → dusk orange) ---- */
+const bgVS = `
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+const bgFS = `
+precision mediump float;
+varying vec2 vUv;
+uniform float uFade;   // alfa prekrytia — riadi dĺžku stopy
+void main() {
+  float y = vUv.y;   // 0 = spodok (horizont), 1 = vrch
+  vec3 top = vec3(0.015, 0.025, 0.085);    // hlboká navy
+  vec3 mid = vec3(0.07, 0.055, 0.14);      // súmračná fialová
+  vec3 bot = vec3(0.55, 0.22, 0.10);       // oranžový horizont
+  vec3 col = mix(mid, top, smoothstep(0.30, 1.0, y));
+  col = mix(bot, col, smoothstep(0.0, 0.30, y));
+  // jemná žiara zapadajúceho slnka pri spodnom okraji
+  float glow = exp(-y * 6.0) * 0.5;
+  col += vec3(0.9, 0.45, 0.15) * glow * (1.0 - abs(vUv.x - 0.5) * 1.2);
+  gl_FragColor = vec4(col, uFade);
+}`;
+
+/* ---- program boidov: instancované trojuholníky ---- */
+const boidVS = `
+attribute vec2 aVert;     // vrchol trojuholníka (lokálny priestor)
+attribute vec2 aPos;      // instancia: pozícia vo svete
+attribute vec2 aVel;      // instancia: rýchlosť (určuje rotáciu + farbu)
+attribute float aDen;     // instancia: lokálna hustota 0..1
+
+uniform vec2  uCam;       // stred kamery (svetové súradnice)
+uniform float uZoom;      // px na svetovú jednotku
+uniform vec2  uView;      // veľkosť viewportu v px
+uniform float uSize;      // veľkosť boida (svetové jednotky)
+uniform float uMode;      // farebný režim: 0 hustota, 1 rýchlosť, 2 smer
+uniform float uMaxSpeed;
+uniform float uAlpha;
+
+varying vec4 vColor;
+
+// HSV → RGB pre režim "smer letu"
+vec3 hsv2rgb(vec3 c) {
+  vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
+void main() {
+  float speed = length(aVel);
+  vec2 dir = speed > 0.001 ? aVel / speed : vec2(1.0, 0.0);
+  // rotácia vrcholu podľa smeru letu
+  vec2 p = vec2(aVert.x * dir.x - aVert.y * dir.y,
+                aVert.x * dir.y + aVert.y * dir.x);
+  vec2 world = aPos + p * uSize;
+  vec2 screen = (world - uCam) * uZoom;
+  vec2 clip = screen / (uView * 0.5);
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+
+  vec3 col;
+  if (uMode < 0.5) {
+    // hustota: riedke = cyan, husté = teplá biela (kŕdeľ žiari)
+    col = mix(vec3(0.25, 0.75, 1.0), vec3(1.0, 0.95, 0.82), aDen);
+  } else if (uMode < 1.5) {
+    // rýchlosť: pomalé = modré, rýchle = teplé
+    float t = clamp(speed / uMaxSpeed, 0.0, 1.0);
+    col = mix(vec3(0.15, 0.35, 0.95), vec3(1.0, 0.8, 0.45), t * t);
+  } else {
+    // odtieň podľa smeru letu
+    float h = atan(dir.y, dir.x) / 6.2831853 + 0.5;
+    col = hsv2rgb(vec3(h, 0.65, 1.0));
+  }
+  vColor = vec4(col, uAlpha);
+}`;
+const boidFS = `
+precision mediump float;
+varying vec4 vColor;
+void main() { gl_FragColor = vColor; }`;
+
+const bgProgram = createProgram(bgVS, bgFS);
+const boidProgram = createProgram(boidVS, boidFS);
+
+// ---- pozadie: fullscreen trojuholník ----
+const bgPosLoc = gl.getAttribLocation(bgProgram, 'aPos');
+const bgFadeLoc = gl.getUniformLocation(bgProgram, 'uFade');
+const bgBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+// ---- geometria boida: pretiahnutý trojuholník (špička dopredu) ----
+const vertLoc = gl.getAttribLocation(boidProgram, 'aVert');
+const posLoc  = gl.getAttribLocation(boidProgram, 'aPos');
+const velLoc  = gl.getAttribLocation(boidProgram, 'aVel');
+const denLoc  = gl.getAttribLocation(boidProgram, 'aDen');
+const uCamLoc = gl.getUniformLocation(boidProgram, 'uCam');
+const uZoomLoc = gl.getUniformLocation(boidProgram, 'uZoom');
+const uViewLoc = gl.getUniformLocation(boidProgram, 'uView');
+const uSizeLoc = gl.getUniformLocation(boidProgram, 'uSize');
+const uModeLoc = gl.getUniformLocation(boidProgram, 'uMode');
+const uMaxSpeedLoc = gl.getUniformLocation(boidProgram, 'uMaxSpeed');
+const uAlphaLoc = gl.getUniformLocation(boidProgram, 'uAlpha');
+
+const triBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+   1.0,  0.0,     // špička (smer letu)
+  -0.7,  0.42,    // ľavé krídlo
+  -0.7, -0.42,    // pravé krídlo
+]), gl.STATIC_DRAW);
+
+// ---- instančný buffer: [x, y, vx, vy, density] × MAX_BOIDS ----
+const INST_STRIDE = 5;
+const instData = new Float32Array(MAX_BOIDS * INST_STRIDE);
+const instBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+gl.bufferData(gl.ARRAY_BUFFER, instData.byteLength, gl.DYNAMIC_DRAW);
+
+gl.disable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+
+/* ----------------------------------------------------------------
+   KAMERA — zoom (koliesko) + pan (pravé tlačidlo / dva prsty)
+   ---------------------------------------------------------------- */
+const cam = { x: WORLD_W / 2, y: WORLD_H / 2, zoom: 0.3 };
+let needsFullClear = true;   // po resize/reseti prekresli pozadie naplno
+
+function fitCameraToWorld() {
+  cam.x = WORLD_W / 2;
+  cam.y = WORLD_H / 2;
+  cam.zoom = Math.min(canvas.width / WORLD_W, canvas.height / WORLD_H) * 0.98;
+  needsFullClear = true;
+}
+
+function resizeCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    const fitted = Math.abs(cam.zoom - Math.min(canvas.width / WORLD_W, canvas.height / WORLD_H) * 0.98) < 1e-6;
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
+    if (fitted || canvas.width === 0) fitCameraToWorld();
+    needsFullClear = true;
+  }
+}
+
+// Prevod súradníc obrazovky (CSS px) → svet
+function screenToWorld(sx, sy) {
+  const dpr = canvas.width / canvas.clientWidth;
+  return {
+    x: cam.x + (sx * dpr - canvas.width / 2) / cam.zoom,
+    y: cam.y + (sy * dpr - canvas.height / 2) / cam.zoom,
+  };
+}
+
+function render() {
+  // ---- pozadie s fade (trail efekt) ----
+  // alfa = 1 − trail → menšia alfa necháva staré snímky presvitať
+  const fade = needsFullClear ? 1.0 : Math.max(0.04, 1.0 - params.trail);
+  needsFullClear = false;
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(bgProgram);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+  gl.enableVertexAttribArray(bgPosLoc);
+  gl.vertexAttribPointer(bgPosLoc, 2, gl.FLOAT, false, 0, 0);
+  vertexAttribDivisor(bgPosLoc, 0);
+  gl.uniform1f(bgFadeLoc, fade);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disableVertexAttribArray(bgPosLoc);
+
+  // ---- naplnenie instančného buffera zo SoA polí ----
+  for (let i = 0, b = 0; i < N; i++, b += INST_STRIDE) {
+    instData[b]     = posX[i];
+    instData[b + 1] = posY[i];
+    instData[b + 2] = velX[i];
+    instData[b + 3] = velY[i];
+    instData[b + 4] = dens[i];
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, instData.subarray(0, N * INST_STRIDE));
+
+  // ---- boidy: aditívne miešanie → husté zhluky žiaria ----
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.useProgram(boidProgram);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+  gl.enableVertexAttribArray(vertLoc);
+  gl.vertexAttribPointer(vertLoc, 2, gl.FLOAT, false, 0, 0);
+  vertexAttribDivisor(vertLoc, 0);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  const bs = INST_STRIDE * 4;
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, bs, 0);
+  vertexAttribDivisor(posLoc, 1);
+  gl.enableVertexAttribArray(velLoc);
+  gl.vertexAttribPointer(velLoc, 2, gl.FLOAT, false, bs, 8);
+  vertexAttribDivisor(velLoc, 1);
+  gl.enableVertexAttribArray(denLoc);
+  gl.vertexAttribPointer(denLoc, 1, gl.FLOAT, false, bs, 16);
+  vertexAttribDivisor(denLoc, 1);
+
+  gl.uniform2f(uCamLoc, cam.x, cam.y);
+  gl.uniform1f(uZoomLoc, cam.zoom);
+  gl.uniform2f(uViewLoc, canvas.width, canvas.height);
+  gl.uniform1f(uSizeLoc, BOID_SIZE);
+  gl.uniform1f(uModeLoc, params.colorMode);
+  gl.uniform1f(uMaxSpeedLoc, params.maxSpeed);
+  gl.uniform1f(uAlphaLoc, 0.85);
+
+  drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+
+  // instančné atribúty vrátiť na divisor 0 (hygiena stavu)
+  vertexAttribDivisor(posLoc, 0);
+  vertexAttribDivisor(velLoc, 0);
+  vertexAttribDivisor(denLoc, 0);
+  gl.disableVertexAttribArray(posLoc);
+  gl.disableVertexAttribArray(velLoc);
+  gl.disableVertexAttribArray(denLoc);
+  gl.disableVertexAttribArray(vertLoc);
+}
+
+/* ================================================================
+   4. VSTUP — myš, dotyk, klávesnica
+   ================================================================ */
+let panning = false;
+let lastMX = 0, lastMY = 0;
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 2 || e.button === 1) {   // pravé/stredné tlačidlo = pan
+    panning = true;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    e.preventDefault();
+  }
+});
+window.addEventListener('mouseup', () => { panning = false; });
+
+canvas.addEventListener('mousemove', e => {
+  if (panning) {
+    const dpr = canvas.width / canvas.clientWidth;
+    cam.x -= (e.clientX - lastMX) * dpr / cam.zoom;
+    cam.y -= (e.clientY - lastMY) * dpr / cam.zoom;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    needsFullClear = true;   // pri posune kamery stopa nedáva zmysel
+  }
+  const w = screenToWorld(e.clientX, e.clientY);
+  predator.x = w.x;
+  predator.y = w.y;
+  predator.active = true;
+});
+canvas.addEventListener('mouseleave', () => { predator.active = false; });
+
+// Zoom kolieskom — smerom ku kurzoru
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = screenToWorld(e.clientX, e.clientY);
+  const factor = Math.exp(-e.deltaY * 0.0012);
+  cam.zoom = Math.max(0.05, Math.min(8, cam.zoom * factor));
+  const after = screenToWorld(e.clientX, e.clientY);
+  cam.x += before.x - after.x;
+  cam.y += before.y - after.y;
+  needsFullClear = true;
+}, { passive: false });
+
+// Dotyk: 1 prst = predátor, 2 prsty = pan + pinch zoom
+let lastTouchDist = 0, lastTouchCX = 0, lastTouchCY = 0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 2) {
+    const [a, b] = e.touches;
+    lastTouchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    lastTouchCX = (a.clientX + b.clientX) / 2;
+    lastTouchCY = (a.clientY + b.clientY) / 2;
+    predator.active = false;
+  } else if (e.touches.length === 1) {
+    const w = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
+    predator.x = w.x; predator.y = w.y; predator.active = true;
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 2) {
+    const [a, b] = e.touches;
+    const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const cx = (a.clientX + b.clientX) / 2;
+    const cy = (a.clientY + b.clientY) / 2;
+    const dpr = canvas.width / canvas.clientWidth;
+    cam.x -= (cx - lastTouchCX) * dpr / cam.zoom;
+    cam.y -= (cy - lastTouchCY) * dpr / cam.zoom;
+    if (lastTouchDist > 0) {
+      const before = screenToWorld(cx, cy);
+      cam.zoom = Math.max(0.05, Math.min(8, cam.zoom * dist / lastTouchDist));
+      const after = screenToWorld(cx, cy);
+      cam.x += before.x - after.x;
+      cam.y += before.y - after.y;
+    }
+    lastTouchDist = dist;
+    lastTouchCX = cx; lastTouchCY = cy;
+    needsFullClear = true;
+  } else if (e.touches.length === 1) {
+    const w = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
+    predator.x = w.x; predator.y = w.y; predator.active = true;
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length === 0) predator.active = false;
+});
+
+// Klávesnica
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  switch (e.code) {
+    case 'Space': togglePause(); e.preventDefault(); break;
+    case 'KeyP': togglePredator(); break;
+    case 'KeyR': doReset(); break;
+    case 'KeyH': toggleUI(); break;
+    case 'Digit1': applyPreset(0); break;
+    case 'Digit2': applyPreset(1); break;
+    case 'Digit3': applyPreset(2); break;
+    case 'Digit4': applyPreset(3); break;
+  }
+});
+
+/* ================================================================
+   5. UI — slidery, tlačidlá, presety, štatistiky
+   ================================================================ */
+const $ = id => document.getElementById(id);
+
+// Prepojenie slider ↔ parameter (label sa aktualizuje automaticky)
+function bindSlider(id, key, fmt, onChange) {
+  const slider = $('s-' + id);
+  const label = $('v-' + id);
+  const sync = () => { slider.value = params[key]; label.textContent = fmt(params[key]); };
+  slider.addEventListener('input', () => {
+    params[key] = parseFloat(slider.value);
+    label.textContent = fmt(params[key]);
+    if (onChange) onChange(params[key]);
+  });
+  sync();
+  return sync;
+}
+
+const fmtInt = v => String(Math.round(v));
+const fmt2 = v => v.toFixed(2);
+
+const syncFns = [
+  bindSlider('count', 'count', fmtInt, v => setCount(v)),
+  bindSlider('sepW', 'sepWeight', fmt2),
+  bindSlider('sepR', 'sepRadius', fmtInt),
+  bindSlider('alnW', 'alnWeight', fmt2),
+  bindSlider('alnR', 'alnRadius', fmtInt),
+  bindSlider('cohW', 'cohWeight', fmt2),
+  bindSlider('cohR', 'cohRadius', fmtInt),
+  bindSlider('speed', 'maxSpeed', fmtInt),
+  bindSlider('trail', 'trail', fmt2),
+  bindSlider('flee', 'fleeRadius', fmtInt),
+];
+function syncUI() { syncFns.forEach(f => f()); }
+
+$('colormode').addEventListener('change', e => { params.colorMode = parseInt(e.target.value, 10); });
+$('preset').addEventListener('change', e => applyPreset(parseInt(e.target.value, 10)));
+
+function togglePause() {
+  paused = !paused;
+  $('b-pause').textContent = paused ? '▶ Play' : '⏸ Pause';
+  $('b-pause').classList.toggle('active', paused);
+}
+function togglePredator() {
+  params.predator = !params.predator;
+  $('b-predator').classList.toggle('active', params.predator);
+}
+function toggleWind() {
+  params.wind = !params.wind;
+  $('b-wind').classList.toggle('active', params.wind);
+}
+function toggleUI() {
+  uiHidden = !uiHidden;
+  $('panel').classList.toggle('hidden', uiHidden);
+  $('stats').classList.toggle('hidden', uiHidden);
+}
+function doReset() {
+  resetBoids();
+  fitCameraToWorld();
+}
+function applyPreset(idx) {
+  const p = PRESETS[idx];
+  if (!p) return;
+  params.sepRadius = p.sepRadius; params.sepWeight = p.sepWeight;
+  params.alnRadius = p.alnRadius; params.alnWeight = p.alnWeight;
+  params.cohRadius = p.cohRadius; params.cohWeight = p.cohWeight;
+  params.maxSpeed = p.maxSpeed;
+  params.trail = p.trail;
+  setCount(p.count);
+  $('preset').value = String(idx);
+  syncUI();
+}
+
+$('b-pause').addEventListener('click', togglePause);
+$('b-reset').addEventListener('click', doReset);
+$('b-predator').addEventListener('click', togglePredator);
+$('b-wind').addEventListener('click', toggleWind);
+$('b-predator').classList.toggle('active', params.predator);
+
+/* ----------------------------------------------------------------
+   HLAVNÁ SLUČKA + FPS počítadlo
+   ---------------------------------------------------------------- */
+const fpsEl = $('fps');
+const cntEl = $('cnt');
+let lastTime = performance.now();
+let fpsSmooth = 60;
+let fpsTimer = 0;
+
+function frame(now) {
+  // dt v sekundách, orezané (záložka na pozadí, lag spike)
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+
+  // FPS — exponenciálne vyhladenie, update labelu 4× za sekundu
+  if (dt > 0) fpsSmooth += (1 / dt - fpsSmooth) * 0.06;
+  fpsTimer += dt;
+  if (fpsTimer > 0.25) {
+    fpsTimer = 0;
+    fpsEl.textContent = String(Math.round(fpsSmooth));
+    cntEl.textContent = N.toLocaleString('en-US') + ' boids';
+  }
+
+  resizeCanvas();
+  if (!paused) updateBoids(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+
+/* ---- štart ---- */
+resetBoids();
+resizeCanvas();
+fitCameraToWorld();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
